@@ -6,7 +6,7 @@ export class Service {
   @prop({ required: true, trim: true })
   name!: string;
 
-  @prop({ required: true, trim: true })
+  @prop({ required: true })
   price!: number;
 }
 

@@ -1,9 +1,10 @@
 import colors from 'colors';
+import config from 'config';
 import { connect, set } from 'mongoose';
-import { MONGO_URI } from './config';
 
 export const connectDB = async () => {
   try {
+    const MONGO_URI = config.get<string>('MONGO_URI');
     set('strictQuery', false);
     const conn = await connect(MONGO_URI!);
     console.log(colors.green(`MongoDB Connected: ${conn.connection.host}`));
