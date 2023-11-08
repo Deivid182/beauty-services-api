@@ -1,10 +1,26 @@
-import { DocumentType, Index, Severity, getModelForClass, modelOptions, pre, prop } from '@typegoose/typegoose';
+import {
+  DocumentType,
+  Index,
+  Severity,
+  getModelForClass,
+  modelOptions,
+  pre,
+  prop,
+} from '@typegoose/typegoose';
 import argon2 from 'argon2';
 
 import { v4 as uuid } from 'uuid';
 
-@pre<User>("save", async function () {
-  if (!this.isModified("password")) {
+export const privateFields = [
+  'password',
+  'passwordResetCode',
+  'verificationCode',
+  'verified',
+  '__v',
+];
+
+@pre<User>('save', async function () {
+  if (!this.isModified('password')) {
     return;
   }
 
@@ -14,9 +30,7 @@ import { v4 as uuid } from 'uuid';
 
   return;
 })
-
 @Index({ email: 1 })
-
 @modelOptions({
   schemaOptions: {
     timestamps: true,

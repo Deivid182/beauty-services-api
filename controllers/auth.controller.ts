@@ -1,93 +1,22 @@
 import { Request, Response } from 'express';
-import { v4 as uuid } from 'uuid';
-import { validateId } from '../helpers';
-import sendEmail from '../lib/mailer';
-import { CreateUserInput, ForgotPasswordInput, ResetPasswordInput, VerifyUserInput } from '../schemas/user.schema';
-import { createUser, findUserByEmail, findUserById } from '../services/user.service';
+import { get } from 'lodash';
+import { verifyJwt } from '../lib/jwt';
+import { CreateSessionInput } from '../schemas/user.schema';
+import { findSessionById, signAccessToken, signRefreshToken } from '../services/auth.service';
+import { findUserByEmail, findUserById } from '../services/user.service';
 
-export const newUser = async (req: Request<{}, {}, CreateUserInput>, res: Response) => {
-  const body = req.body;
-
-  try {
-    const user = createUser(body);
-
-    await user.save();
-
-    await sendEmail({
-      from: 'test@example.com',
-      to: user.email,
-      subject: 'Please confirm your email',
-      text: `verification code ${user.verificationCode}. Id: ${user._id}`,
-    })
-
-    return res.status(201).json({ message: 'User created successfully', user });
-  } catch (error: any) {
-    console.log(error, 'ERROR_NEW_USER');
-    if (error.code === 11000) {
-      return res.status(409).json({
-        message: 'User already exists'
-      })
-    }
-  }
-}
-
-export const verifyUser = async (req: Request<VerifyUserInput>, res: Response) => {
-  const id = req.params.id;
-  const vCode = req.params.verificationCode;
-
-  //find the user
+export const createSession = async (req: Request<{}, {}, CreateSessionInput>, res: Response) => {
 
   try {
 
-    if (!validateId(id)) {
-      return res.status(400).json({
-        message: 'Invalid ID'
-      })
-    }
-
-    const user = await findUserById(id);
+    const user = await findUserByEmail(req.body.email);
 
     if (!user) {
       return res.status(404).json({
         message: 'User not found'
       })
     }
-
-    if (user.verified) {
-      return res.status(409).json({
-        message: 'User already verified'
-      })
-    }
-
-    if (user.verificationCode === vCode) {
-      user.verified = true;
-
-      await user.save();
-
-      return res.status(200).json({
-        message: 'User verified successfully',
-      })
-    }
-  } catch (error) {
-    console.log(error, 'ERROR_VERIFY_USER');
-    return res.status(500).json({
-      message: 'Error verifying user'
-    })
-  }
-}
-
-export const forgotPassword = async (req: Request<{}, {}, ForgotPasswordInput>, res: Response) => {
-  const { email } = req.body;
-
-  try {
-
-    const user = await findUserByEmail(email);
-
-    if (!user) {
-      return res.status(404).json({
-        message: 'User not found'
-      })
-    }
+    
 
     if (!user.verified) {
       return res.status(409).json({
@@ -95,60 +24,73 @@ export const forgotPassword = async (req: Request<{}, {}, ForgotPasswordInput>, 
       })
     }
 
-    user.passwordResetCode = uuid();
+    const isValidPassword = await user.validatePassword(req.body.password);
 
-    await user.save();
-
-    await sendEmail({
-      from: 'test@example.com',
-      to: user.email,
-      subject: 'Please reset your password',
-      text: `Password reset code ${user.passwordResetCode}. Id: ${user._id}`,
-    })
-    
-    return res.status(200).json({
-      message: `Password reset code sent to ${user.email}`
-    })
-
-  } catch (error) {
-    console.log(error, 'ERROR_FORGOT_PASSWORD');
-    return res.status(500).json({
-      message: 'Error sending email'
-    })
-  }
-}
-
-export const resetPassword = async (req: Request<ResetPasswordInput['params'], {}, ResetPasswordInput['body']>, res: Response) => {
-
-  try {
-
-    if (!validateId(req.params.id)) {
-      return res.status(400).json({
-        message: 'Invalid ID'
+    if (!isValidPassword) {
+      return res.status(401).json({
+        message: 'Invalid credentials'
       })
     }
 
-    const user = await findUserById(req.params.id);
+    //console.log(isValidPassword, 'IS_VALID_PASSWORD');
 
-    if (!user || !user.passwordResetCode || user.passwordResetCode !== req.params.passwordResetCode) {
-      return res.status(404).json({
-        message: 'Could not reser user password'
-      })
-    }
-    
-    user.passwordResetCode = null;
-    user.password = req.body.password;
+    //sign an access token
+    const accesToken = signAccessToken(user);
 
-    await user.save();
+    //sign a refresh token
+    const refreshToken = await signRefreshToken({ userId: String(user._id) });
 
+    //send the tokens
     return res.status(200).json({
-      message: 'Password reset successfully'
+      accesToken,
+      refreshToken
     })
-
+    
   } catch (error) {
-    console.log(error, 'ERROR_RESET_PASSWORD');
+    console.log(error, 'ERROR_CREATE_SESSION');
     res.status(500).json({
-      message: 'Error resetting password'
+      message: 'Error creating session'
     })
-  }
+  } 
 }
+
+export const refreshAccessToken = async (req: Request, res: Response) => {
+  let refreshToken = get(req, 'headers.x-refresh');
+
+  if(Array.isArray(refreshToken)) {
+    refreshToken = refreshToken[0];
+  }
+
+  if(!refreshToken) {
+    return res.status(401).send("Could not refresh access token");
+  }
+
+  const decoded = verifyJwt<{ session: string }>(refreshToken, 'refreshTokenPublicKey');
+  
+
+  console.log(decoded);
+
+  if (!decoded) {
+    console.log("decoded not found");
+    return res.status(401).send("Could not refresh access token");
+  }
+
+  const session = await findSessionById(decoded.session);
+
+  if (!session || !session.valid) {
+    console.log("session not found or invalid");
+    return res.status(401).json("Could not refresh access token");
+  }
+
+  const user = await findUserById(String(session.user));
+
+  if (!user) {
+    console.log("user not found");
+    return res.status(401).json("Could not refresh access token");
+  }
+
+  const accessToken = signAccessToken(user);
+
+  return res.send({ accessToken });
+}
+
